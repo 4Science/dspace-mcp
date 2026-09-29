@@ -1,0 +1,31 @@
+{
+  "name": "dspace-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for DSpace 7+ REST API — runs locally (stdio) or on AWS Lambda (HTTP)",
+  "type": "module",
+  "main": "dist/transports/stdio.js",
+  "bin": {
+    "dspace-mcp": "dist/transports/stdio.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start:stdio": "node dist/transports/stdio.js",
+    "start:http": "node dist/transports/http.js",
+    "dev:http": "tsx watch src/transports/http.ts",
+    "test": "node --test dist/tests/**/*.test.js"
+  },
+  "keywords": ["mcp", "dspace", "repository", "digital-library"],
+  "author": "4Science Spa",
+  "license": "AGPL-3.0-only",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "express": "^4.21.2",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.2",
+    "@types/node": "^22.15.3",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}
