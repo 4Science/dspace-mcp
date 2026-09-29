@@ -11,6 +11,7 @@ Provides AI assistants with tools to search, authenticate, create and update ite
 - **Item Management (Admin)** — Create archived items directly (bypasses workflow) and delete items
 - **Item Updates** — Patch metadata using JSON Patch (RFC 6902)
 - **File Uploads (Admin)** — Attach files (bitstreams) to items, auto-creating the target bundle
+- **Content Retrieval** — Read a document's extracted full text (TEXT bundle) or download the original file
 - **Submissions** — Create workspace items through the standard submission flow
 - **Browse** — List communities and collections
 
@@ -77,6 +78,8 @@ docker build -t dspace-mcp .
 | `dspace_update_item_metadata` | Patch item metadata (JSON Patch) |
 | `dspace_delete_item` | Permanently delete an item by UUID (admin) |
 | `dspace_upload_bitstream` | Upload a local file as a bitstream (attachment) to an item (admin) |
+| `dspace_get_item_fulltext` | Get an item's file text — extracted text (TEXT bundle) or a textual original |
+| `dspace_get_bitstream_content` | Download a bitstream by UUID — save to a local file (`outputPath`), or return inline text / base64 blob |
 | `dspace_create_workspace_item` | Create a submission workspace item |
 | `dspace_update_workspace_item` | Update workspace item metadata |
 | `dspace_list_workspace_items` | List current user's workspace items |

@@ -386,6 +386,85 @@ export class DSpaceClient {
     });
   }
 
+  // ─── Reading bitstream content & extracted text ────────────
+
+  /** List the bitstreams of a bundle (embedding each bitstream's format). */
+  async getBundleBitstreams(bundleUuid: string): Promise<Bitstream[]> {
+    const { data, status } = await this.request<HalPage<Bitstream>>(
+      'GET',
+      `/api/core/bundles/${bundleUuid}/bitstreams`,
+      { params: { size: 100, embed: 'format' } },
+    );
+    if (status >= 400) {
+      throw new Error(`List bitstreams failed (HTTP ${status}): ${JSON.stringify(data)}`);
+    }
+    return data?._embedded?.bitstreams ?? [];
+  }
+
+  /**
+   * List the bitstreams of a named bundle on an item (e.g. "ORIGINAL" or
+   * "TEXT"). Returns an empty array if the bundle does not exist.
+   */
+  async getItemBitstreamsByBundle(itemUuid: string, bundleName: string): Promise<Bitstream[]> {
+    const bundles = await this.getItemBundles(itemUuid);
+    const bundle = bundles.find(b => b.name === bundleName);
+    if (!bundle) return [];
+    return this.getBundleBitstreams(bundle.uuid);
+  }
+
+  /**
+   * Download the raw content of a bitstream.
+   * Returns the bytes plus the content type and length reported by the server.
+   */
+  async downloadBitstreamContent(bitstreamUuid: string): Promise<{
+    data: Uint8Array;
+    contentType: string;
+    contentLength: number;
+  }> {
+    const url = new URL(`${this.baseUrl}/api/core/bitstreams/${bitstreamUuid}/content`);
+    const headers: Record<string, string> = {};
+    if (this.auth.token) {
+      headers['Authorization'] = `Bearer ${this.auth.token}`;
+    }
+
+    // DSpace 307-redirects bitstream content to a storage location; fetch
+    // follows redirects by default.
+    const res = await fetch(url.toString(), { method: 'GET', headers });
+    if (res.status >= 400) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Download bitstream failed (HTTP ${res.status}): ${text}`);
+    }
+
+    const buffer = new Uint8Array(await res.arrayBuffer());
+    return {
+      data: buffer,
+      contentType: res.headers.get('content-type') || 'application/octet-stream',
+      contentLength: buffer.byteLength,
+    };
+  }
+
+  /**
+   * Resolve the extracted-text bitstream for a given original bitstream.
+   *
+   * DSpace's media-filter stores extracted plain text in the "TEXT" bundle as a
+   * bitstream named after the original file with a ".txt" suffix
+   * (e.g. "paper.pdf" → "paper.pdf.txt"). Returns undefined if none is found.
+   */
+  async findExtractedTextBitstream(
+    itemUuid: string,
+    originalName: string,
+  ): Promise<Bitstream | undefined> {
+    const textBitstreams = await this.getItemBitstreamsByBundle(itemUuid, 'TEXT');
+    if (textBitstreams.length === 0) return undefined;
+    const expected = `${originalName}.txt`;
+    return (
+      textBitstreams.find(b => b.name === expected) ??
+      // Fallbacks: some configurations drop the original extension or vary case.
+      textBitstreams.find(b => b.name?.toLowerCase() === expected.toLowerCase()) ??
+      textBitstreams.find(b => b.name === `${originalName.replace(/\.[^.]+$/, '')}.txt`)
+    );
+  }
+
   // ─── Communities & Collections ─────────────────────────────
 
   async listCommunities(params?: { page?: number; size?: number }): Promise<unknown> {
