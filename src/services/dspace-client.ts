@@ -9,8 +9,19 @@ export class DSpaceClient {
   private baseUrl: string;
   private auth: AuthState = { token: null, csrfToken: null, csrfCookie: null };
 
-  constructor(baseUrl?: string) {
+  /**
+   * @param baseUrl Optional DSpace REST base URL (defaults to config.baseUrl).
+   * @param initialToken Optional pre-existing DSpace JWT to seed the session
+   *   with. Used by the HTTP/OAuth transport, which builds a fresh client per
+   *   request and injects the token resolved from the caller's opaque access
+   *   token. The token stays confined to this in-memory instance and is never
+   *   returned to the MCP client or the model.
+   */
+  constructor(baseUrl?: string, initialToken?: string) {
     this.baseUrl = (baseUrl || config.baseUrl).replace(/\/$/, '');
+    if (initialToken) {
+      this.auth.token = initialToken;
+    }
   }
 
   // ─── CSRF ──────────────────────────────────────────────────
@@ -196,6 +207,37 @@ export class DSpaceClient {
     return token;
   }
 
+  /**
+   * Refresh the current DSpace JWT using DSpace's native refresh mechanism:
+   * re-POST the existing token to /api/authn/login with no other parameters,
+   * and read the freshly issued token from the response Authorization header.
+   *
+   * Used to keep a session alive: when the OAuth layer rotates its own opaque
+   * refresh token it also renews the backing DSpace JWT here. This only works
+   * while the current JWT is still valid, so it must be called before that JWT
+   * expires. Note this is rotation, not revocation: DSpace issues a new token
+   * but the previous one remains valid until its own expiry.
+   *
+   * @returns the new JWT.
+   * @throws if there is no current token, or DSpace does not return a new one.
+   */
+  async refreshToken(): Promise<string> {
+    if (!this.auth.token) {
+      throw new Error('Cannot refresh: no current token');
+    }
+    await this.refreshCsrf();
+    const res = await this.request<string>('POST', '/api/authn/login');
+    const authHeader = res.headers.get('authorization');
+    if (!authHeader) {
+      throw new Error(
+        `Token refresh failed (HTTP ${res.status}): no Authorization header in response`,
+      );
+    }
+    const token = authHeader.replace(/^Bearer\s+/i, '');
+    this.auth.token = token;
+    return token;
+  }
+
   async logout(): Promise<void> {
     if (!this.auth.token) return;
     await this.request('POST', '/api/authn/logout');
@@ -203,8 +245,57 @@ export class DSpaceClient {
   }
 
   async authStatus(): Promise<AuthStatus> {
-    const { data } = await this.request<AuthStatus>('GET', '/api/authn/status');
+    // embed=eperson so the authenticated user's email/name are included in the
+    // response (DSpace omits the embedded eperson by default).
+    const { data } = await this.request<AuthStatus>('GET', '/api/authn/status', {
+      params: { embed: 'eperson' },
+    });
     return data;
+  }
+
+  /**
+   * Authenticate this client from environment-provided credentials
+   * (config.credentials), used by the stdio transport at startup. Prefers a
+   * pre-existing DSpace JWT (DSPACE_TOKEN); otherwise falls back to a
+   * username/password login (DSPACE_USER + DSPACE_PASSWORD).
+   *
+   * Never logs or returns the token. Returns a small, non-sensitive summary of
+   * the outcome for a startup message.
+   */
+  async authenticateFromEnv(): Promise<{
+    authenticated: boolean;
+    method: 'token' | 'password' | 'none';
+    email?: string;
+    reason?: string;
+  }> {
+    const { token, user, password } = config.credentials;
+
+    if (token) {
+      this.setToken(token);
+      try {
+        const status = await this.authStatus();
+        if (status.authenticated) {
+          return { authenticated: true, method: 'token', email: status._embedded?.eperson?.email };
+        }
+        this.auth.token = null;
+        return { authenticated: false, method: 'token', reason: 'DSPACE_TOKEN is invalid or expired' };
+      } catch (e) {
+        this.auth.token = null;
+        return { authenticated: false, method: 'token', reason: e instanceof Error ? e.message : String(e) };
+      }
+    }
+
+    if (user && password) {
+      try {
+        await this.login(user, password);
+        const status = await this.authStatus();
+        return { authenticated: true, method: 'password', email: status._embedded?.eperson?.email ?? user };
+      } catch (e) {
+        return { authenticated: false, method: 'password', reason: e instanceof Error ? e.message : String(e) };
+      }
+    }
+
+    return { authenticated: false, method: 'none', reason: 'no credentials in environment' };
   }
 
   // ─── Search ────────────────────────────────────────────────

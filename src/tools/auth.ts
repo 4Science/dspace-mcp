@@ -1,64 +1,26 @@
 /**
  * Authentication tools for DSpace MCP server.
+ *
+ * Only a read-only status tool is exposed. Credentials are never accepted via
+ * tool arguments and the DSpace JWT is never returned in a response, so no
+ * credential can leak into the MCP client / model context.
+ *
+ * How authentication is actually established:
+ *  - HTTP transport: OAuth 2.1 at the transport layer (bearer tokens), always on.
+ *  - stdio transport: from environment credentials at startup (DSPACE_TOKEN, or
+ *    DSPACE_USER + DSPACE_PASSWORD) — see src/transports/stdio.ts.
+ *
+ * There is intentionally no dspace_login / dspace_logout tool: login/logout are
+ * handled by the transport, not by the model.
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { z } from 'zod';
 import { DSpaceClient } from '../services/dspace-client.js';
 
-export function registerAuthTools(server: McpServer, client: DSpaceClient): void {
-  server.tool(
-    'dspace_login',
-    'Authenticate with a DSpace instance. Provide EITHER a JWT token directly, OR username + password for password-based login. The session persists for subsequent tool calls.',
-    {
-      token: z.string().optional().describe('Pre-existing JWT token to use directly'),
-      email: z.string().optional().describe('Email/username for password login'),
-      password: z.string().optional().describe('Password for password login'),
-    },
-    async ({ token, email, password }) => {
-      try {
-        if (token) {
-          client.setToken(token);
-          const status = await client.authStatus();
-          if (!status.authenticated) {
-            return {
-              content: [{ type: 'text' as const, text: 'Token set but authentication check failed. The token may be expired or invalid.' }],
-              isError: true,
-            };
-          }
-          const eperson = status._embedded?.eperson;
-          return {
-            content: [{
-              type: 'text' as const,
-              text: `Authenticated successfully via JWT token.\nUser: ${eperson?.email || 'unknown'}\nName: ${eperson?.name || 'unknown'}`,
-            }],
-          };
-        }
-
-        if (email && password) {
-          const jwt = await client.login(email, password);
-          const status = await client.authStatus();
-          const eperson = status._embedded?.eperson;
-          return {
-            content: [{
-              type: 'text' as const,
-              text: `Login successful.\nUser: ${eperson?.email || email}\nName: ${eperson?.name || 'unknown'}\nJWT Token (save for reuse): ${jwt}`,
-            }],
-          };
-        }
-
-        return {
-          content: [{ type: 'text' as const, text: 'Please provide either a JWT token, or both email and password.' }],
-          isError: true,
-        };
-      } catch (error) {
-        return {
-          content: [{ type: 'text' as const, text: `Login failed: ${error instanceof Error ? error.message : String(error)}` }],
-          isError: true,
-        };
-      }
-    },
-  );
-
+export function registerAuthTools(
+  server: McpServer,
+  client: DSpaceClient,
+  transport: 'http' | 'stdio',
+): void {
   server.tool(
     'dspace_auth_status',
     'Check the current authentication status with the DSpace instance.',
@@ -76,33 +38,33 @@ export function registerAuthTools(server: McpServer, client: DSpaceClient): void
           };
         }
         return {
-          content: [{ type: 'text' as const, text: 'Not authenticated. Use dspace_login to authenticate.' }],
+          content: [{
+            type: 'text' as const,
+            text: transport === 'http'
+              ? 'Not authenticated. Sign in through your MCP client\u2019s OAuth flow.'
+              : 'Not authenticated. Set DSPACE_TOKEN or DSPACE_USER/DSPACE_PASSWORD in the server environment.',
+          }],
         };
       } catch (error) {
         return {
-          content: [{ type: 'text' as const, text: `Auth status check failed: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: 'text' as const, text: `Auth status check failed: ${errMsg(error)}` }],
           isError: true,
         };
       }
     },
   );
+}
 
-  server.tool(
-    'dspace_logout',
-    'Logout from the DSpace instance, invalidating the current JWT token.',
-    {},
-    async () => {
-      try {
-        await client.logout();
-        return {
-          content: [{ type: 'text' as const, text: 'Logged out successfully.' }],
-        };
-      } catch (error) {
-        return {
-          content: [{ type: 'text' as const, text: `Logout failed: ${error instanceof Error ? error.message : String(error)}` }],
-          isError: true,
-        };
-      }
-    },
-  );
+/**
+ * Format an error message for a tool response, scrubbing anything that looks
+ * like a bearer token / JWT so a token can never leak into the model context
+ * through an error string.
+ */
+function errMsg(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw
+    // Bearer <token>
+    .replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [REDACTED]')
+    // bare JWTs (three base64url segments)
+    .replace(/\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[REDACTED_JWT]');
 }
