@@ -194,4 +194,34 @@ export function registerItemTools(server: McpServer, client: DSpaceClient): void
       }
     },
   );
+
+  server.tool(
+    'dspace_move_item',
+    'Move a DSpace item to a different collection (admin only). Blocked when the item and the target collection declare a different dspace.entity.type (both absent counts as a match).',
+    {
+      itemUuid: z.string().describe('UUID of the item to move'),
+      targetCollectionUuid: z.string().describe('UUID of the destination collection'),
+    },
+    async ({ itemUuid, targetCollectionUuid }) => {
+      try {
+        const r = await client.moveItem(itemUuid, targetCollectionUuid);
+        return {
+          content: [{
+            type: 'text' as const,
+            text: [
+              'Item moved successfully.',
+              `Item: ${r.itemUuid}`,
+              `New owning collection: ${r.targetCollectionUuid}`,
+              `Entity type: ${r.targetEntityType ?? '(absent)'}`,
+            ].join('\n'),
+          }],
+        };
+      } catch (error) {
+        return {
+          content: [{ type: 'text' as const, text: `Move item failed: ${error instanceof Error ? error.message : String(error)}` }],
+          isError: true,
+        };
+      }
+    },
+  );
 }

@@ -3,7 +3,7 @@
  * Handles authentication (JWT + CSRF), HAL parsing, and all HTTP interaction.
  */
 import { config } from '../config.js';
-import type { AuthState, AuthStatus, Bitstream, Bundle, HalPage, MetadataMap, PatchOperation } from '../types/dspace.js';
+import type { AuthState, AuthStatus, Bitstream, Bundle, Collection, DSpaceObject, HalPage, Item, MetadataMap, PatchOperation } from '../types/dspace.js';
 
 export class DSpaceClient {
   private baseUrl: string;
@@ -335,6 +335,34 @@ export class DSpaceClient {
     return data;
   }
 
+  /** Fetch a single collection typed as `Collection` (exposes its `metadata` map). */
+  async getCollection(uuid: string): Promise<Collection> {
+    const { data, status } = await this.request<Collection>('GET', `/api/core/collections/${uuid}`);
+    if (status >= 400) {
+      throw new Error(`Get collection failed (HTTP ${status}): ${JSON.stringify(data)}`);
+    }
+    return data;
+  }
+
+  /** Fetch a single item typed as `Item` (exposes its `metadata` map). */
+  async getItemTyped(uuid: string): Promise<Item> {
+    const { data, status } = await this.request<Item>('GET', `/api/core/items/${uuid}`);
+    if (status >= 400) {
+      throw new Error(`Get item failed (HTTP ${status}): ${JSON.stringify(data)}`);
+    }
+    return data;
+  }
+
+  /**
+   * Read the `dspace.entity.type` metadata value from any DSpace object,
+   * normalizing missing key / empty array / blank value to `undefined` so that
+   * "absent" compares equal to "absent".
+   */
+  private entityTypeOf(dso: DSpaceObject): string | undefined {
+    const value = dso.metadata?.['dspace.entity.type']?.[0]?.value?.trim();
+    return value ? value : undefined;
+  }
+
   async createItemAdmin(owningCollectionUuid: string, metadata: MetadataMap, options?: {
     discoverable?: boolean;
     withdrawn?: boolean;
@@ -381,6 +409,52 @@ export class DSpaceClient {
     if (status >= 400) {
       throw new Error(`Delete item failed (HTTP ${status}): ${JSON.stringify(data)}`);
     }
+  }
+
+  /**
+   * Move an item to a different owning collection, guarded by a
+   * `dspace.entity.type` equality check.
+   *
+   * The source entity type is read from the ITEM's OWN `dspace.entity.type`
+   * metadata; the target entity type from the target collection's. The move is
+   * allowed only when both values are equal under `entityTypeOf` normalization,
+   * where both-absent counts as a match. On mismatch the method throws BEFORE
+   * any mutation, so a blocked move performs no `PUT`.
+   *
+   * The move itself is `PUT /api/core/items/{uuid}/owningCollection` with
+   * `Content-Type: text/uri-list` and a body equal to the target collection's
+   * self link. Requires admin privileges.
+   */
+  async moveItem(itemUuid: string, targetCollectionUuid: string): Promise<{
+    itemUuid: string;
+    targetCollectionUuid: string;
+    sourceEntityType?: string;
+    targetEntityType?: string;
+  }> {
+    const sourceItem = await this.getItemTyped(itemUuid);
+    const target = await this.getCollection(targetCollectionUuid);
+    const sourceType = this.entityTypeOf(sourceItem);
+    const targetType = this.entityTypeOf(target);
+
+    if (sourceType !== targetType) {
+      throw new Error(
+        `Move blocked: entity-type mismatch. Item dspace.entity.type = "${sourceType ?? '(absent)'}", ` +
+        `target collection dspace.entity.type = "${targetType ?? '(absent)'}". ` +
+        'A move is only allowed when the item and the target collection have the same dspace.entity.type.',
+      );
+    }
+
+    await this.refreshCsrf();
+    const uri = `${this.baseUrl}/api/core/collections/${targetCollectionUuid}`;
+    const { data, status } = await this.request('PUT', `/api/core/items/${itemUuid}/owningCollection`, {
+      rawBody: uri,
+      contentType: 'text/uri-list',
+    });
+    if (status >= 400) {
+      throw new Error(`Move item failed (HTTP ${status}): ${JSON.stringify(data)}`);
+    }
+
+    return { itemUuid, targetCollectionUuid, sourceEntityType: sourceType, targetEntityType: targetType };
   }
 
   // ─── Bundles & Bitstreams (file uploads) ───────────────────
